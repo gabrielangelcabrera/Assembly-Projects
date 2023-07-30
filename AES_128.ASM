@@ -1,15 +1,14 @@
 TITLE AES-128
-COMMENT *Uses the Advanced Encryption Standard with 128 bit cipher keys
-		to encrypt and decrypt a 128 bit message*
-.MODEL FLAT,STDCALL
-.STACK 4096
+COMMENT * Uses the Advanced Encryption Standard with 128 bit cipher keys
+		to encrypt and decrypt a 128 bit message. Uses x86 assembly language.*
+.MODEL FLAT, STDCALL        ; uses flat memory model and stdcall calling convention
+.STACK 4096     ; uses a stack size of 4096 bytes
 
 ; ------------------------------------ Windows Console API Calls Function Declarations ------------------------------------
 				; Function calls to the Windows Console system, in order to display on screen
-				; the key, plaintext, cipher, and decrypted message
+				    ; the key, plaintext, cipher, and decrypted message
 STD_OUTPUT_HANDLE EQU -11
-GetStdHandle PROTO, nStdHandle:DWORD						; declaring functions to be used
-SetConsoleMode PROTO, hConsoleHandle:DWORD, dwMode:DWORD	
+GetStdHandle PROTO, nStdHandle:DWORD
 WriteConsoleA PROTO, handle:DWORD, lpBuffer:PTR BYTE, nNumberOfCharsToWrite:DWORD, lpNumberOfCharsWritten:PTR DWORD, lpReserved:DWORD
 ExitProcess PROTO, dwExitCode:DWORD
 
@@ -40,19 +39,22 @@ carriage_return_new_line_length DD 2
 
 ; ------------------------------------------------ AES-128 Data ------------------------------------------------
 				; Data for the substitution tables, the raw hex to ascii conversion, and 
-				; the AES-128 algorithm
-PLAINTEXT DWORD 0E2BEC16BH, 0969F402EH, 0117E3DE9H, 02A179373H
-KEY DWORD		016157E2BH, 0A6D2AE28H, 08815F7ABH, 03C4FCF09H
+				    ; the AES-128 algorithm
+PLAINTEXT DWORD 0E2BEC16BH, 0969F402EH, 0117E3DE9H, 02A179373H  ; plaintext = 6BC1BEE22E409F96E93D7E117393172A
+KEY DWORD		016157E2BH, 0A6D2AE28H, 08815F7ABH, 03C4FCF09H  ; cipher key = 2B7E151628AED2A6ABF7158809CF4F3C
 
-PLAINTEXT_ASCII BYTE 32 DUP(?)
-KEY_ASCII BYTE 32 DUP(?)
-EXPANDED_KEY BYTE 16*11 DUP(?)
-CIPHER BYTE 16 DUP(?)
-CIPHER_ASCII BYTE 32 DUP(?)
-DECRYPTED_TEXT BYTE 16 DUP(?)
-DECRYPTED_TEXT_ASCII BYTE 32 DUP(?)
+                ; initializing memory locations with undefined values for later use
+PLAINTEXT_ASCII BYTE 32 DUP(?)      ; memory location for the ascii values of the rendered plaintext
+KEY_ASCII BYTE 32 DUP(?)            ; memory location for the rendered key, requires 32 bytes, 1 byte per nibble
+EXPANDED_KEY BYTE 16*11 DUP(?)      ; memory location for the 11 round keys, each 16 bytes (128 bits)
+CIPHER BYTE 16 DUP(?)               ; memory location for the encrypted text, also acts as the state
+CIPHER_ASCII BYTE 32 DUP(?)         ; memory location for the ascii values of the encrypted text for rendering
+DECRYPTED_TEXT BYTE 16 DUP(?)       ; memory location for the decrypted text, raw bytes
+DECRYPTED_TEXT_ASCII BYTE 32 DUP(?) ; memory location for the ascii values of the decrypted text, 1 byte per nibble
+    ; conversion table from hex values 0-F to ascii values 0-F, that is nibble hex value to byte ascii value
 HEX_TO_ASCII BYTE 030H, 031H, 032H, 033H, 034H, 035H, 036H, 037H, 038H, 039H, 041H, 042H, 043H, 044H, 045H, 046H
-ROUND_CONST DWORD 08040201H, 80402010H, 0000361BH
+ROUND_CONST DWORD 08040201H, 80402010H, 0000361BH   ; values of the round constants, to be used in key expansion
+    ; forward substitution table data
 F_SBOX_01 QWORD 0C56F6BF27B777C63H, 076ABD7FE2B670130H, 0F04759FA7DC982CAH, 0C072A49CAFA2D4ADH
 F_SBOX_23 QWORD 0CCF73F362693FDB7H, 01531D871F1E5A534H, 09A059618C323C704H, 075B227EBE2801207H
 F_SBOX_45 QWORD 0A05A6E1B1A2C8309H, 0842FE329B3D63B52H, 05BB1FC20ED00D153H, 0CF584C4A39BECB6AH
@@ -61,8 +63,10 @@ F_SBOX_89 QWORD 01744975FEC130CCDH, 073195D643D7EA7C4H, 088902A22DC4F8160H, 0DB0
 F_SBOX_AB QWORD 05C2406490A3A32E0H, 079E4959162ACD3C2H, 0A94ED58D6D37C8E7H, 008AE7A65EAF4566CH
 F_SBOX_CD QWORD 0C6B4A61C2E2578BAH, 08A8BBD4B1F74DDE8H, 00EF6034866B53E70H, 09E1DC186B9573561H
 F_SBOX_EF QWORD 0948ED9691198F8E1H, 0DF2855CEE9871E9BH, 06842E6BF0D89A18CH, 016BB54B00F2D9941H
+    ; array of memory location addresses to rows of forward substitution table data
 FWD_SBOX_ADDR DWORD F_SBOX_01, F_SBOX_23, F_SBOX_45, F_SBOX_67, F_SBOX_89, F_SBOX_AB, F_SBOX_CD, F_SBOX_EF
-FWD_SBOX BYTE 256 DUP(?)
+FWD_SBOX BYTE 256 DUP(?)    ; memory location for the fully assembled forward substitution table
+    ; inverse substitution table data
 I_SBOX_01 QWORD 038A53630D56A0952H, 0FBD7F3819EA340BFH, 087FF2F9B8239E37CH, 0CBE9DEC444438E34H
 I_SBOX_23 QWORD 03D23C2A632947B54H, 04EC3FA420B954CEEH, 0B224D92866A12E08H, 025D18B6D49A25B76H
 I_SBOX_45 QWORD 01698688664F6F872H, 092B6655DCC5CA4D4H, 0DAB9EDFD5048706CH, 0849D8DA75746155EH
@@ -71,8 +75,9 @@ I_SBOX_89 QWORD 0EADC674F4111913AH, 073E6B4F0CECFF297H, 08535ADE72274AC96H, 06ED
 I_SBOX_AB QWORD 089C5291D711AF147H, 01BBE18AA0E62B76FH, 02079D2C64B3E56FCH, 0F45ACD78FEC0DB9AH
 I_SBOX_CD QWORD 031C7078833A8DD1FH, 05FEC8027591012B1H, 00D4AB519A97F5160H, 0EF9CC9939F7AE52DH
 I_SBOX_EF QWORD 0B0F52AAE4D3BE0A0H, 0619953833CBBEBC8H, 026D677BA7E042B17H, 07D0C2155631469E1H
+    ; array of memory location addresses to rows of inverse substitution table data
 INV_SBOX_ADDR DWORD I_SBOX_01, I_SBOX_23, I_SBOX_45, I_SBOX_67, I_SBOX_89, I_SBOX_AB, I_SBOX_CD, I_SBOX_EF
-INV_SBOX BYTE 256 DUP(?)
+INV_SBOX BYTE 256 DUP(?)    ; memory location for the fully assembled inverse substitution table
 
 .code
 main proc
@@ -81,55 +86,107 @@ CALL SETUP_SBOXES       ; Set Up Substitution Boxes
 CALL GEN_EXPANDED_KEY   ; Set Up Expanded Key
 
 ; ------------------------ ENCRYPTION STEP ------------------------
-     MOV EAX, DWORD PTR PLAINTEXT[00H]     ; Set Up Intermediate State
-     MOV EBX, DWORD PTR PLAINTEXT[04H]
-     MOV ECX, DWORD PTR PLAINTEXT[08H]
-     MOV EDX, DWORD PTR PLAINTEXT[0CH]
-     MOV DWORD PTR CIPHER[00H], EAX
-     MOV DWORD PTR CIPHER[04H], EBX
-     MOV DWORD PTR CIPHER[08H], ECX
-     MOV DWORD PTR CIPHER[0CH], EDX
-     MOV ESI, 0                            ; Initial Round (ROUND KEY 0)
-     CALL XOR_STATE_AND_ROUND_KEY
-     MOV ECX, 0H                           ; Intermediate Rounds (ROUND KEY 1 TO 9)
-ROUND_LOOP:  INC ECX
-             MOV ESI, ECX
-             CALL SUBSTITUTE_STATE_BYTES	
-             CALL ROW_SHIFT_STATE_BYTES	
+        ; Set Up Intermediate State, copy all 128 bits of the plaintext into the intermediate state memory location
+    MOV EAX, DWORD PTR PLAINTEXT[00H]       ; copy the first 32 bits of the plaintext into EAX
+    MOV EBX, DWORD PTR PLAINTEXT[04H]      
+    MOV ECX, DWORD PTR PLAINTEXT[08H]
+    MOV EDX, DWORD PTR PLAINTEXT[0CH]
+    MOV DWORD PTR CIPHER[00H], EAX          ; copy the first 32 bits of the plaintext into the memory location
+    MOV DWORD PTR CIPHER[04H], EBX              ; which will be used to hold the intermediate state (CIPHER)
+    MOV DWORD PTR CIPHER[08H], ECX
+    MOV DWORD PTR CIPHER[0CH], EDX
+        
+        ; Initial Round (ROUND KEY 0)
+    MOV ESI, 0                              ; use ESI as the index of the round key, ESI = 0 --> Round Key 0 
+    CALL XOR_STATE_AND_ROUND_KEY            ; XOR the entire 128 bits of the intermediate state with entire 128 bits of Round Key 0
+    
+        ; Intermediate Rounds (ROUND KEY 1 TO 9)
+    MOV ECX, 0H                             ; use ECX as the loop counter in an incrementing loop
+ROUND_LOOP:  INC ECX                        ; increment ECX
+             MOV ESI, ECX                   ; use ESI as the index of the round key, ESI = ECX = Round Key Index, ESI = 1 --> Round Key 1, etc.
+             CALL SUBSTITUTE_STATE_BYTES	; perform forward substitution using the forward substitution table on each of the 16 bytes of the state
+                
+                ; represent the 16 bytes of the state as a 4x4 matrix with byte0, byte1, byte2, byte3 as the first column, etc.
+                    ; shift the second row bytes to the left, the third row bytes to the left twice, the fourth row bytes to the left 3 times
+             CALL ROW_SHIFT_STATE_BYTES
+                
+                ; represent the 16 bytes of the state as a 4x4 matrix with byte0, byte1, byte2, byte3 as the first column, etc.
+                    ; represent the first column bytes as the coefficients of the polynomial: b(x) = b3 * x^3 + b2 * x^2 + b1 * x + b0
+                    ; recognize the polynomial as residing in a finite field of order 2^8, that is only 256 elements exist in this field with
+                    ; 2 due to being a binary value and 8 due to the byte coefficient having 8 bits
+                    ; characteristic p = 2 (the prime number on which the finite field is based)
+                    ; multiply the column polynomial by the polynomial a(x) = a3 * x^3 + a2 * x^2 + a1 * x + a0, where a3 = 3, a2 = 1, a1 = 1, a0 = 2
+                    ; to get the resultant polynomial c(x)
+                    ; since the order of both polynomials is 3, the resulting polynomial is of order 6, and is:
+                    ; a0 b0 + a0 b1 x + a0 b2 x^2 + a0 b3 x^3 + a1 b0 x + a1 b1 x^2 + a1 b2 x^3 + a1 b3 x^4 + a2 b0 x^2 + a2 b1 x^3 + a2 b2 x^4 
+                    ; + a2 b3 x^5 + a3 b0 x^3 + a3 b1 x^4 + a3 b2 x^5 + a3 b3 x^6
+                    ; this polynomial represents a value over the bounds of the finite field of order 2^8, to get the representation of this
+                    ; value within the finite field of order 2^8, perform modular reduction with the polynomial x^8 + x^4 + x^3 + x + 1
+                    ; this reduced polynomial has the coefficients which will be the bytes of the new column
+                    ; more info at: https://en.wikipedia.org/wiki/Rijndael_MixColumns , https://en.wikipedia.org/wiki/Finite_field 
+                    ; https://en.wikipedia.org/wiki/Finite_field_arithmetic#Rijndael's_(AES)_finite_field
              CALL COLUMN_MIX_STATE_BYTES	
-             CALL XOR_STATE_AND_ROUND_KEY
-             CMP ECX, 9H
-             JL ROUND_LOOP
-     CALL SUBSTITUTE_STATE_BYTES          ; Final Round (ROUND KEY 10)
+
+             CALL XOR_STATE_AND_ROUND_KEY   ; XOR the entire 128 bits of the intermediate state with entire 128 bits of the current Round Key
+             CMP ECX, 9H                    ; if the counter represented by ECX has reached 9, that is the round key just XORed is Round Key 9
+             JL ROUND_LOOP                      ; break out of the loop
+     
+        ; Final Round (ROUND KEY 10)
+     CALL SUBSTITUTE_STATE_BYTES            ; perform forward substitution using the forward substitution table on each of the 16 bytes of the state
+
+        ; represent the 16 bytes of the state as a 4x4 matrix with byte0, byte1, byte2, byte3 as the first column, etc.
+            ; shift the second row bytes to the left, the third row bytes to the left twice, the fourth row bytes to the left 3 times
      CALL ROW_SHIFT_STATE_BYTES
-     MOV ESI, 0AH
-     CALL XOR_STATE_AND_ROUND_KEY
+     
+     MOV ESI, 0AH                           ; move into ESI the index for Round Key 10 = 0xA
+     CALL XOR_STATE_AND_ROUND_KEY           ; XOR the entire 128 bits of the intermediate state with entire 128 bits of the last Round Key
 
 ; ------------------------ DECRYPTION STEP ------------------------
-     MOV EAX, DWORD PTR CIPHER[00H]       ; Set Up Inverse Intermediate State
+        ; Set Up another Intermediate State but at a different memory location
+            ; copy all 128 bits of the encrypted text into the intermediate state memory location, DECRYPTED_TEXT
+     MOV EAX, DWORD PTR CIPHER[00H]      ; copy the first 32 bits of the encrypted text into EAX
      MOV EBX, DWORD PTR CIPHER[04H]
      MOV ECX, DWORD PTR CIPHER[08H]
      MOV EDX, DWORD PTR CIPHER[0CH]
-     MOV DWORD PTR DECRYPTED_TEXT[00H], EAX
-     MOV DWORD PTR DECRYPTED_TEXT[04H], EBX
+     MOV DWORD PTR DECRYPTED_TEXT[00H], EAX     ; copy the first 32 bits of the encrypted text into the new intermediate
+     MOV DWORD PTR DECRYPTED_TEXT[04H], EBX         ; state memory location
      MOV DWORD PTR DECRYPTED_TEXT[08H], ECX
      MOV DWORD PTR DECRYPTED_TEXT[0CH], EDX
       
-     MOV ESI, 0AH                         ; Invert Final Round
-     CALL XOR_DECRYPT_STATE_AND_ROUND_KEY
+        
+        ; For decryption perform every step in the encryption sequence in reverse, with the approriate 
+            ; inverting steps, begin with inverting the final round of encryption
+     MOV ESI, 0AH                               ; move into ESI the index for Round Key 10 = 0xA
+     CALL XOR_DECRYPT_STATE_AND_ROUND_KEY       ; XOR the entire 128 bits of the new intermediate state with entire 128 bits of Round Key 10
+        
+        ; represent the 16 bytes of the state as a 4x4 matrix with byte0, byte1, byte2, byte3 as the first column, etc.
+            ; shift the second row bytes to the right, the third row bytes to the right twice, the fourth row bytes to the right 3 times
      CALL INV_ROW_SHIFT_BYTES
-     CALL INV_SUBSTITUTE_BYTES
-     MOV ECX, 0AH                         ; Invert Intermediate Rounds
-INV_ROUND_LOOP:	DEC ECX
-                MOV ESI, ECX
-                CALL XOR_DECRYPT_STATE_AND_ROUND_KEY
+
+     CALL INV_SUBSTITUTE_BYTES  ; perform inverse substitution using the inverse substitution table on each of the 16 bytes of the state
+
+        ; Invert Intermediate Rounds
+     MOV ECX, 0AH               ; use ECX as the counter in a decrementing loop
+INV_ROUND_LOOP:	DEC ECX         ; decrement ECX
+                MOV ESI, ECX    ; use the value of the counter as the index to the current Round Key
+                CALL XOR_DECRYPT_STATE_AND_ROUND_KEY    ; XOR the entire 128 bits of the new intermediate state with entire 128 bits of Round Key N
+
+                    ; perform inverse column mixing using galois field multiplication with the polynomial 
+                        ; a(x) = a3 * x^3 + a2 * x^2 + a1 * x + a0, where a3 = 11, a2 = 13, a1 = 9, a0 = 14
+                        ; this polynomial when multiplied has the effect of reversing the multiplication of the previous multiplication
                 CALL INV_COLUMN_MIX_BYTES
+
+                    ; represent the 16 bytes of the state as a 4x4 matrix with byte0, byte1, byte2, byte3 as the first column, etc.
+                        ; shift the second row bytes to the right, the third row bytes to the right twice, the fourth row bytes to the right 3 times
                 CALL INV_ROW_SHIFT_BYTES
-                CALL INV_SUBSTITUTE_BYTES
-                CMP ECX, 1H
+
+                CALL INV_SUBSTITUTE_BYTES ; perform inverse substitution using the inverse substitution table on each of the 16 bytes of the state
+                CMP ECX, 1H               ; break out of the loop after Round 1 has been reversed
                 JG INV_ROUND_LOOP
-      MOV ESI, 0                          ; Invert Initial Round
-      CALL XOR_DECRYPT_STATE_AND_ROUND_KEY
+
+        ; Invert Initial Round
+      MOV ESI, 0                           ; use ESI as the index to Round Key 0               
+      CALL XOR_DECRYPT_STATE_AND_ROUND_KEY ; XOR the entire 128 bits of the new intermediate state with entire 128 bits of Round Key 0
 
 		; ------------------------------------------   Windows Console API Calls   ---------------------------------------------------------------------------
 				invoke GetStdHandle, STD_OUTPUT_HANDLE	; places the value of the output handle in EAX, https://learn.microsoft.com/en-us/windows/console/getstdhandle
@@ -451,7 +508,7 @@ INV_COL_LOOP: MOV EDX, DWORD PTR DECRYPTED_TEXT[EBX] ; CURRENT 4 BYTES -> EDX
    COL_BYTE_LOOP: MOV EAX, 0090D0B0EH     ; START STATE OF B ARRAY
                   MOV ECX, ESI
                   SHL ECX, 3
-                  ROL EAX, CL             ; ROTATE THE MULTIPLYING ARRAY BY 1 BYTE EVERY TURN
+                  ROL EAX, CL             ; ROTATE THE MULTIPLIYING ARRAY BY 1 BYTE EVERY TURN
                   MOV ECX, EDX            ; START STATE OF A ARRAY
                   MOV EBX, 0              ; START STATE OF P ARRAY
                   CALL GALOIS_MULTIPLICATION ; STORE THE PRODUCT OF GALOIS MULTIPLICATION EVERY TURN
