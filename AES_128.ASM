@@ -112,7 +112,7 @@ ROUND_LOOP:  INC ECX                        ; increment ECX
                 
                 ; represent the 16 bytes of the state as a 4x4 matrix with byte0, byte1, byte2, byte3 as the first column, etc.
                     ; represent the first column bytes as the coefficients of the polynomial: b(x) = b3 * x^3 + b2 * x^2 + b1 * x + b0
-                    ; recognize the polynomial as residing in a finite field of order 2^8, that is only 256 elements exist in this field with
+                    ; recognize the polynomial as residing in a finite field of order 2^8, GF(2^8)
                     ; 2 due to being a binary value and 8 due to the byte coefficient having 8 bits
                     ; characteristic p = 2 (the prime number on which the finite field is based)
                     ; multiply the column polynomial by the polynomial a(x) = a3 * x^3 + a2 * x^2 + a1 * x + a0, where a3 = 3, a2 = 1, a1 = 1, a0 = 2
@@ -120,6 +120,8 @@ ROUND_LOOP:  INC ECX                        ; increment ECX
                     ; since the order of both polynomials is 3, the resulting polynomial is of order 6, and is:
                     ; a0 b0 + a0 b1 x + a0 b2 x^2 + a0 b3 x^3 + a1 b0 x + a1 b1 x^2 + a1 b2 x^3 + a1 b3 x^4 + a2 b0 x^2 + a2 b1 x^3 + a2 b2 x^4 
                     ; + a2 b3 x^5 + a3 b0 x^3 + a3 b1 x^4 + a3 b2 x^5 + a3 b3 x^6
+                    ; Note that multiplication in GF(2^8) is distinct from ordinary polynomial multiplication. It requires performing bit-level operations,
+                    ; taking care of carries in a specific way, and reducing modulo m(x) to ensure that the result is in the correct form.
                     ; this polynomial represents a value over the bounds of the finite field of order 2^8, to get the representation of this
                     ; value within the finite field of order 2^8, perform modular reduction with the polynomial x^8 + x^4 + x^3 + x + 1
                     ; this reduced polynomial has the coefficients which will be the bytes of the new column
@@ -243,25 +245,38 @@ INV_ROUND_LOOP:	DEC ECX         ; decrement ECX
 
 				invoke ExitProcess, 0
 
-
-SETUP_SBOXES PROC NEAR	; Set Up Substitution Tables
-     MOV ESI, 0         ; index for source     ; Set Up Forward Substitution Box
-     MOV EBX, 0         ; index for addresses			
-ADDR_LOOP:     MOV EAX, DWORD PTR FWD_SBOX_ADDR[EBX]
-               MOV EDI, 0   ; index for destination
-  MOVE_LOOP:        MOV ECX, DWORD PTR [EAX + EDI]
-                    MOV DWORD PTR FWD_SBOX[ESI], ECX
-                    ADD EDI, 04H
-                    ADD ESI, 04H
-                    CMP EDI, 1CH
+    ; Subroutine to set up the forward and inverse substitution tables
+SETUP_SBOXES PROC NEAR
+    ; Set Up Forward Substitution Box
+        ; copying each row of the forward substitution table 32 bits at a time to a memory location large enough
+            ; to hold every row, using an outer loop to iterate through the rows and an inner loop to iterate
+            ; through increments of 32 bits of row data
+     MOV ESI, 0         ; use ESI as the index into the source memory location
+     MOV EBX, 0         ; use EBX as the index into the destination memory location
+ADDR_LOOP:     MOV EAX, DWORD PTR FWD_SBOX_ADDR[EBX]    ; copy the address to the nth forward substitution row data
+               MOV EDI, 0                               ; use EDI as the offset to the offset
+  MOVE_LOOP:        MOV ECX, DWORD PTR [EAX + EDI]      ; copy 32 bits of the memory location pointed to by the address to the nth
+                                                            ; forward substitution row + the offset into the row data
+                    MOV DWORD PTR FWD_SBOX[ESI], ECX    ; place into the memory location reserved for the full substitution table,
+                                                            ; using ESI from 0 to the end of the memory location without resetting its value
+                    ADD EDI, 04H                        ; increment EDI, the inner offset by 4, to point to the memory location 4 bytes (32 bits)
+                                                            ; ahead to the next value to copy
+                    ADD ESI, 04H                        ; increment ESI by 4 to point to the next empty memory location, 32 bits ahead
+                    CMP EDI, 1CH                        ; if inner loop has just finished copying the last 32 bits of this row, jump to the next row
                     JLE MOVE_LOOP
-               ADD EBX, 04H
+               ADD EBX, 04H                             ; co-opting EBX to use as the outer loop counter, when the end of the rows to copy has
+                                                            ; been reached break out of the loop
                CMP EBX, 1CH
                JLE ADDR_LOOP
-     MOV ESI, 0          ; index for source    ; Set Up Inverse Substitution Box
-     MOV EBX, 0          ; index for addresses			
+
+    ; Set Up Inverse Substitution Box
+        ; copying each row of the inverse substitution table 32 bits at a time to a memory location large enough
+            ; to hold every row, using an outer loop to iterate through the rows and an inner loop to iterate
+            ; through increments of 32 bits of row data
+     MOV ESI, 0                                         ; identical code to the forward substitution set up, but with
+     MOV EBX, 0                                             ; different source/destination locations
 INV_ADDR_LOOP: MOV EAX, DWORD PTR INV_SBOX_ADDR[EBX]
-               MOV EDI, 0    ; index for destination
+               MOV EDI, 0
      INV_M_LOOP:    MOV ECX, DWORD PTR [EAX + EDI]
                     MOV DWORD PTR INV_SBOX[ESI], ECX
                     ADD EDI, 04H
@@ -274,15 +289,32 @@ INV_ADDR_LOOP: MOV EAX, DWORD PTR INV_SBOX_ADDR[EBX]
      RET
 SETUP_SBOXES ENDP
 
+    ; Subroutine to generate the round keys used in encryption/decryption
+        ; this subroutine performs the key expansion step of the AES
 GEN_EXPANDED_KEY PROC NEAR
-     MOV EAX, DWORD PTR KEY[00H] ; the key is round key 0
+        ; the first round key is the cipher key itself
+     MOV EAX, DWORD PTR KEY[00H]                    ; copy the first 32 bits of the round key
      MOV EBX, DWORD PTR KEY[04H]
      MOV ECX, DWORD PTR KEY[08H]
      MOV EDX, DWORD PTR KEY[0CH]
-     MOV DWORD PTR EXPANDED_KEY[0H + 00H], EAX
-     MOV DWORD PTR EXPANDED_KEY[0H + 04H], EBX
+     MOV DWORD PTR EXPANDED_KEY[0H + 00H], EAX      ; place the first 32 bits of the round key into the memory location
+     MOV DWORD PTR EXPANDED_KEY[0H + 04H], EBX          ; of the first 32 bits of the expanded key
      MOV DWORD PTR EXPANDED_KEY[0H + 08H], ECX
      MOV DWORD PTR EXPANDED_KEY[0H + 0CH], EDX
+
+        ; round key generation starts off at round key 1 and finishes at round key 10
+            ; this creates a total of 11 round keys, including round key 0, which was simply copied into place
+            ; info about this step can be found at: https://en.wikipedia.org/wiki/AES_key_schedule
+            ; this code uses a loop to generate 32 bits of a round key at a time and is a subset of the full
+            ; algorithm tailored to only generate round keys for the 128 bit AES
+            ; in this implementation every iteration has 32 bits generated by XORing the bits of the previous 32 bits
+            ; in the round key currently being generated and the 32 bits in the same offset location in the previous round key
+            ; except for the first 32 bits, where the previous 32 bits would be located in the previous round key, instead
+            ; a different set of operations are performed: first the previous 32 bits (4 bytes) are rotated in place by 8 bits
+            ; then the bytes are substituted using the forward substitution table, then the resulting 32 bits are XORed with
+            ; the corresponding 32 bits in the previous round key, and finally the resulting value is XORed with a round constant
+            ; which has been specified, except the round constant value is only the least significant byte of the 32 bits and the
+            ; other 3 bytes are zero. These 32 bits are finally placed into the currently generating memory location offset
      MOV ECX, 028H ; CX = 39->0     (39 -> 0) INCLUSIVE
 EXPAND_LOOP:   MOV EDX, 02CH       ; DX = i     (4 -> 43) INCLUSIVE
                SUB EDX, ECX			
