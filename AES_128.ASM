@@ -341,7 +341,7 @@ SECOND_CASE:   MOV EAX, DWORD PTR EXPANDED_KEY[EBX - 004H]      ; get the last 3
                PUSH ECX                                         ; conserve the value of ECX, as it's register will be needed
                MOV ECX, 0                                       ; using a carousel technique to cycle through the bytes of the 32 bits
                MOV CL, AL                                           ; the substitution box has a look up value for every representable
-               MOV AL, BYTE PTR FWD_SBOX[ECX]					    ; value of 1 byte, from 00 to FF, whenever you look up the position
+               MOV AL, BYTE PTR FWD_SBOX[ECX]                       ; value of 1 byte, from 00 to FF, whenever you look up the position
                ROR EAX, 08H                                         ; in that table corresponding to your byte value, a new substitute
                MOV CL, AL                                           ; value is returned, this table is the forward substitution table
                MOV AL, BYTE PTR FWD_SBOX[ECX]                       ; the inverse substitution table is constructed in a way that
