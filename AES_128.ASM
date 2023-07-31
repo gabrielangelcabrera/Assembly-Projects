@@ -326,20 +326,25 @@ EXPAND_LOOP:   MOV EDX, 02CH        ; using EDX to represent the variable i, whi
                CMP EAX, 0           ; if (i % 4 == 0) go to 2nd case else go to default case
                JZ SECOND_CASE
 
-                    ; the default case is simply XORing the previous 32 bits with the 32 bits in the previous row/round key
+                        ; row 0: [ --------------------------- original cipher key --------------------------- ]
+                        ; row 1: [ 32 bit group  4 ] [ 32 bit group  5 ] [ 32 bit group  6 ] [ 32 bit group  7 ]
+                        ; row 2: [ 32 bit group  8 ] [ 32 bit group  9 ] [ 32 bit group 10 ] [ 32 bit group 11 ]
+
+                    ; the default case is simply XORing the previous 32 bit group with the corresponding 32 bit group one row back
 DEFAULT_CASE:  PUSH ECX                                         ; conserve the value in ECX, because the ECX register will be used
-               MOV EAX, DWORD PTR EXPANDED_KEY[EBX - 004H]      ; get the 32 bits right before the current 32 bits in this row
-               MOV ECX, DWORD PTR EXPANDED_KEY[EBX - 010H]      ; get the 32 bits in the same positions, but in the previous row
-               XOR EAX, ECX                                     ; perform a logic exclusive-or operation between both sets of 32 bits
-               MOV DWORD PTR EXPANDED_KEY[EBX], EAX             ; save the resulting 32 bit value into the current memory location in the current row
-               POP ECX                                              ; EBX has the current memory address, it increments its value to point to the next
-               JMP EXPND_LOOP_END                                   ; memory address, without regard to any underlying row structure
+               MOV EAX, DWORD PTR EXPANDED_KEY[EBX - 004H]      ; get the 32 bit group immediately before the 32 bit group currently being generated
+               MOV ECX, DWORD PTR EXPANDED_KEY[EBX - 010H]      ; get the group in the same position as the one being generated, but in the previous row
+                                                                    ; if generating group 10, then the two groups to get are group 9 and group 6
+               XOR EAX, ECX                                     ; perform a logical exclusive-or operation between both groups
+               MOV DWORD PTR EXPANDED_KEY[EBX], EAX             ; save the resulting 32 bits into the memory location for the current group
+               POP ECX                                              ; place back the value of ECX that was pushed to the stack
+               JMP EXPND_LOOP_END                                   ; jump to the end of the loop
                    
-                   ; the second case occurs at the beginning of a new row, i.e. i % 4 == 0
-SECOND_CASE:   MOV EAX, DWORD PTR EXPANDED_KEY[EBX - 004H]      ; get the last 32 bits of the previous row
+                   ; the second case occurs at the beginning of a new row, i.e. group 4, 8, 12, ...
+SECOND_CASE:   MOV EAX, DWORD PTR EXPANDED_KEY[EBX - 004H]      ; get the 32 bit group at the end of the previous row
                ROR EAX, 08H                                     ; rotate the 32 bits to the right 8 times
                PUSH ECX                                         ; conserve the value of ECX, as it's register will be needed
-               MOV ECX, 0                                       ; using a carousel technique to cycle through the bytes of the 32 bits
+               MOV ECX, 0                                       ; using a carousel technique to cycle through the bytes of the group
                MOV CL, AL                                           ; the substitution box has a look up value for every representable
                MOV AL, BYTE PTR FWD_SBOX[ECX]                       ; value of 1 byte, from 00 to FF, whenever you look up the position
                ROR EAX, 08H                                         ; in that table corresponding to your byte value, a new substitute
@@ -352,41 +357,52 @@ SECOND_CASE:   MOV EAX, DWORD PTR EXPANDED_KEY[EBX - 004H]      ; get the last 3
                MOV CL, AL
                MOV AL, BYTE PTR FWD_SBOX[ECX]
                ROR EAX, 08H                                     ; rotate the 32 bits one last time to get them into original order
-               MOV ECX, DWORD PTR EXPANDED_KEY[EBX - 010H]      ; get the 32 bits at the start of the previous row
-               XOR EAX, ECX                                     ; XOR the current 32 bits with the 32 bits from the start of the prev row
-               MOV ECX, EDX                                     
-               SHR ECX, 2
-               DEC ECX
-               PUSH EBX
-               MOV EBX, 0                                    ; XOR result with third term
-               MOV BL, BYTE PTR ROUND_CONST[ECX]
-               XOR EAX, EBX
-               POP EBX
+               MOV ECX, DWORD PTR EXPANDED_KEY[EBX - 010H]      ; get the first 32 bit group in the previous row
+               XOR EAX, ECX                                     ; XOR the current group with the first group in the previous row
+               MOV ECX, EDX                                     ; get the value of the current row index, for round key 1 -> 1
+               SHR ECX, 2                                           ; this value is calculated by dividing by 4 using 2 bitwise right shifts
+               DEC ECX                                          ; decrement by 1 to get the index to the first round constant, since
+                                                                    ; since the round constants are stored as an array of bytes starting
+                                                                    ; at element position 0
+               PUSH EBX                                         ; conserve the value in EBX, as the register will be used
+               MOV EBX, 0                                       ; zero out the 32 bit register
+               MOV BL, BYTE PTR ROUND_CONST[ECX]                ; place a single round constant at the lowest significant byte
+                                                                    ; this makes a group of: LSB[ rc 00 00 00 ]MSB
+               XOR EAX, EBX                                     ; XOR this round constant group with the current group
+               POP EBX                                          ; restore the values of EBX and ECX previously pushed to the stack
                POP ECX
-               MOV DWORD PTR EXPANDED_KEY[EBX], EAX          ; Store result
+               MOV DWORD PTR EXPANDED_KEY[EBX], EAX             ; store the final value of the group into the current group's memory location
 EXPND_LOOP_END:DEC ECX
                CMP ECX, 0
                JNE EXPAND_LOOP
                RET
 GEN_EXPANDED_KEY ENDP
 
-XOR_STATE_AND_ROUND_KEY PROC NEAR ; preload ESI with round key number
-     PUSHAD
-     MOV EBX, 0
-     SHL ESI, 4
-XOR_LOOP: MOV EAX, DWORD PTR CIPHER[EBX]
-          MOV ECX, DWORD PTR EXPANDED_KEY[ESI + EBX]
-          XOR EAX, ECX
-          MOV DWORD PTR CIPHER[EBX], EAX
-          ADD EBX, 04H
-          CMP EBX, 0CH
+    ; Subroutine to perform a logical exclusive-or operation on the 128 bits of the intermediate state
+        ; with a specified round key. To use this subroutine the index of the current round must be
+        ; placed into the ESI register prior to calling
+XOR_STATE_AND_ROUND_KEY PROC NEAR
+     PUSHAD                                             ; conserve the values of all registers
+     MOV EBX, 0                                         ; zero out the EBX register
+     SHL ESI, 4                                         ; multiply the value in ESI by 16, done by bitwise left shifting 4 times
+                                                            ; doing this allows you to access the starting memory address of 
+                                                            ; the round key desired
+XOR_LOOP: MOV EAX, DWORD PTR CIPHER[EBX]                ; copy the value of the 1st, 2nd, 3rd, then 4th 32 bit group of the intermediate state
+          MOV ECX, DWORD PTR EXPANDED_KEY[ESI + EBX]    ; copy the value of the 1st, 2nd, 3rd, then 4th 32 bit group of the round key
+          XOR EAX, ECX                                  ; xor the 1st, 2nd, 3rd, then 4th 32 bit groups of the state and round key
+          MOV DWORD PTR CIPHER[EBX], EAX                ; save the resulting values at the intermediate state memory location
+          ADD EBX, 04H                                  ; move EBX to point to the next groups starting address
+          CMP EBX, 0CH                                  ; if EBX is pointing to the starting address of the last group, loop one last time
           JLE XOR_LOOP
      POPAD
      RET
 XOR_STATE_AND_ROUND_KEY ENDP
 
-XOR_DECRYPT_STATE_AND_ROUND_KEY PROC NEAR ; preload ESI with round key number
-     PUSHAD
+    ; Subroutine to perform a logical exclusive-or operation on the 128 bits of the inverse intermediate state
+        ; with a specified round key. To use this subroutine the index of the current round must be
+        ; placed into the ESI register prior to calling
+XOR_DECRYPT_STATE_AND_ROUND_KEY PROC NEAR
+     PUSHAD                                             ; identical to the forward version, but with a different address to save to
      MOV EBX, 0
      SHL ESI, 4
 DEC_XOR_LOOP: MOV EAX, DWORD PTR DECRYPTED_TEXT[EBX]
