@@ -292,7 +292,7 @@ SETUP_SBOXES ENDP
     ; Subroutine to generate the round keys used in encryption/decryption
         ; this subroutine performs the key expansion step of the AES
 GEN_EXPANDED_KEY PROC NEAR
-        ; the first round key is the cipher key itself
+        ; the first round key (Round Key 0) is the cipher key itself
      MOV EAX, DWORD PTR KEY[00H]                    ; copy the first 32 bits of the round key
      MOV EBX, DWORD PTR KEY[04H]
      MOV ECX, DWORD PTR KEY[08H]
@@ -315,41 +315,46 @@ GEN_EXPANDED_KEY PROC NEAR
             ; the corresponding 32 bits in the previous round key, and finally the resulting value is XORed with a round constant
             ; which has been specified, except the round constant value is only the least significant byte of the 32 bits and the
             ; other 3 bytes are zero. These 32 bits are finally placed into the currently generating memory location offset
-     MOV ECX, 028H ; CX = 39->0     (39 -> 0) INCLUSIVE
-EXPAND_LOOP:   MOV EDX, 02CH       ; DX = i     (4 -> 43) INCLUSIVE
-               SUB EDX, ECX			
-               MOV EAX, EDX
-               AND EAX, 00000003H  ; AND with 3, and if there's anything 
-               MOV EBX, EDX        ;      left over, that's the remainder after modulo 4
-               SHL EBX, 2          ; EBX is i*4
-               CMP EAX, 0          ; if (i % 4 == 0) go to 2nd case else go to default case
+
+     MOV ECX, 028H                  ; using ECX as the outer loop counter from 39 to 0
+EXPAND_LOOP:   MOV EDX, 02CH        ; using EDX to represent the variable i, which is the index to the ith sequence of 32 bits 
+               SUB EDX, ECX			; subtracting ECX from 44 to get i to equal values starting from 4 to 43
+               MOV EAX, EDX         ; using the logical AND operation to get only the 2 least significant bits
+               AND EAX, 00000003H       ; doing this yields the remainder after modulo 4
+               MOV EBX, EDX         ; retrieving the value of i
+               SHL EBX, 2           ; setting EBX to the value i * 4
+               CMP EAX, 0           ; if (i % 4 == 0) go to 2nd case else go to default case
                JZ SECOND_CASE
-DEFAULT_CASE:  PUSH ECX
-               MOV EAX, DWORD PTR EXPANDED_KEY[EBX - 004H]
-               MOV ECX, DWORD PTR EXPANDED_KEY[EBX - 010H]
-               XOR EAX, ECX
-               MOV DWORD PTR EXPANDED_KEY[EBX], EAX
-               POP ECX
-               JMP EXPND_LOOP_END
-SECOND_CASE:   MOV EAX, DWORD PTR EXPANDED_KEY[EBX - 004H]
-               ROR EAX, 08H        ; Rotate word
-               PUSH ECX
-               MOV ECX, 0          ; Substitute word
-               MOV CL, AL
-               MOV AL, BYTE PTR FWD_SBOX[ECX]					
+
+                    ; the default case is simply XORing the previous 32 bits with the 32 bits in the previous row/round key
+DEFAULT_CASE:  PUSH ECX                                         ; conserve the value in ECX, because the ECX register will be used
+               MOV EAX, DWORD PTR EXPANDED_KEY[EBX - 004H]      ; get the 32 bits right before the current 32 bits in this row
+               MOV ECX, DWORD PTR EXPANDED_KEY[EBX - 010H]      ; get the 32 bits in the same positions, but in the previous row
+               XOR EAX, ECX                                     ; perform a logic exclusive-or operation between both sets of 32 bits
+               MOV DWORD PTR EXPANDED_KEY[EBX], EAX             ; save the resulting 32 bit value into the current memory location in the current row
+               POP ECX                                              ; EBX has the current memory address, it increments its value to point to the next
+               JMP EXPND_LOOP_END                                   ; memory address, without regard to any underlying row structure
+                   
+                   ; the second case occurs at the beginning of a new row, i.e. i % 4 == 0
+SECOND_CASE:   MOV EAX, DWORD PTR EXPANDED_KEY[EBX - 004H]      ; get the last 32 bits of the previous row
+               ROR EAX, 08H                                     ; rotate the 32 bits to the right 8 times
+               PUSH ECX                                         ; conserve the value of ECX, as it's register will be needed
+               MOV ECX, 0                                       ; using a carousel technique to cycle through the bytes of the 32 bits
+               MOV CL, AL                                           ; the substitution box has a look up value for every representable
+               MOV AL, BYTE PTR FWD_SBOX[ECX]					    ; value of 1 byte, from 00 to FF, whenever you look up the position
+               ROR EAX, 08H                                         ; in that table corresponding to your byte value, a new substitute
+               MOV CL, AL                                           ; value is returned, this table is the forward substitution table
+               MOV AL, BYTE PTR FWD_SBOX[ECX]                       ; the inverse substitution table is constructed in a way that
+               ROR EAX, 08H                                         ; returns your original byte value when presented with the byte
+               MOV CL, AL                                           ; value returned by the forward substitution table
+               MOV AL, BYTE PTR FWD_SBOX[ECX]                       ; XX -> F_Table[XX] -> YY -> I_Table[YY] -> XX
                ROR EAX, 08H
                MOV CL, AL
                MOV AL, BYTE PTR FWD_SBOX[ECX]
-               ROR EAX, 08H
-               MOV CL, AL
-               MOV AL, BYTE PTR FWD_SBOX[ECX]
-               ROR EAX, 08H
-               MOV CL, AL
-               MOV AL, BYTE PTR FWD_SBOX[ECX]
-               ROR EAX, 08H
-               MOV ECX, DWORD PTR EXPANDED_KEY[EBX - 010H]   ; XOR first and second term
-               XOR EAX, ECX
-               MOV ECX, EDX
+               ROR EAX, 08H                                     ; rotate the 32 bits one last time to get them into original order
+               MOV ECX, DWORD PTR EXPANDED_KEY[EBX - 010H]      ; get the 32 bits at the start of the previous row
+               XOR EAX, ECX                                     ; XOR the current 32 bits with the 32 bits from the start of the prev row
+               MOV ECX, EDX                                     
                SHR ECX, 2
                DEC ECX
                PUSH EBX
