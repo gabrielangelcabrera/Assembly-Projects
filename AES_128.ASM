@@ -110,23 +110,8 @@ ROUND_LOOP:  INC ECX                        ; increment ECX
                     ; shift the second row bytes to the left, the third row bytes to the left twice, the fourth row bytes to the left 3 times
              CALL ROW_SHIFT_STATE_BYTES
                 
-                ; represent the 16 bytes of the state as a 4x4 matrix with byte0, byte1, byte2, byte3 as the first column, etc.
-                    ; represent the first column bytes as the coefficients of the polynomial: b(x) = b3 * x^3 + b2 * x^2 + b1 * x + b0
-                    ; recognize the polynomial as residing in a finite field of order 2^8, GF(2^8)
-                    ; 2 due to being a binary value and 8 due to the byte coefficient having 8 bits
-                    ; characteristic p = 2 (the prime number on which the finite field is based)
-                    ; multiply the column polynomial by the polynomial a(x) = a3 * x^3 + a2 * x^2 + a1 * x + a0, where a3 = 3, a2 = 1, a1 = 1, a0 = 2
-                    ; to get the resultant polynomial c(x)
-                    ; since the order of both polynomials is 3, the resulting polynomial is of order 6, and is:
-                    ; a0 b0 + a0 b1 x + a0 b2 x^2 + a0 b3 x^3 + a1 b0 x + a1 b1 x^2 + a1 b2 x^3 + a1 b3 x^4 + a2 b0 x^2 + a2 b1 x^3 + a2 b2 x^4 
-                    ; + a2 b3 x^5 + a3 b0 x^3 + a3 b1 x^4 + a3 b2 x^5 + a3 b3 x^6
-                    ; Note that multiplication in GF(2^8) is distinct from ordinary polynomial multiplication. It requires performing bit-level operations,
-                    ; taking care of carries in a specific way, and reducing modulo m(x) to ensure that the result is in the correct form.
-                    ; this polynomial represents a value over the bounds of the finite field of order 2^8, to get the representation of this
-                    ; value within the finite field of order 2^8, perform modular reduction with the polynomial x^8 + x^4 + x^3 + x + 1
-                    ; this reduced polynomial has the coefficients which will be the bytes of the new column
-                    ; more info at: https://en.wikipedia.org/wiki/Rijndael_MixColumns , https://en.wikipedia.org/wiki/Finite_field 
-                    ; https://en.wikipedia.org/wiki/Finite_field_arithmetic#Rijndael's_(AES)_finite_field
+                ; Subroutine to multiply each column within a finite field by a specific element, this operation can be undone by
+                    ; multiplying within the same finite field with a related specific element
              CALL COLUMN_MIX_STATE_BYTES	
 
              CALL XOR_STATE_AND_ROUND_KEY   ; XOR the entire 128 bits of the intermediate state with entire 128 bits of the current Round Key
@@ -416,23 +401,27 @@ DEC_XOR_LOOP: MOV EAX, DWORD PTR DECRYPTED_TEXT[EBX]
      RET
 XOR_DECRYPT_STATE_AND_ROUND_KEY ENDP
 
+    ; Subroutine to substitute all the individual bytes of the intermediate state
+        ; using the forward substitution table
 SUBSTITUTE_STATE_BYTES PROC NEAR
-     PUSHAD
-     MOV EBX, 0
-SUB_LOOP: MOV EAX, 0
-          MOV AL, BYTE PTR CIPHER[EBX]
-          MOV AL, BYTE PTR FWD_SBOX[EAX]
-          MOV BYTE PTR CIPHER[EBX], AL
-          INC EBX
-          CMP EBX, 0FH
+     PUSHAD                                 ; conserve the values in the registers
+     MOV EBX, 0                             ; using EBX as the loop counter
+SUB_LOOP: MOV EAX, 0                        ; zero out EAX to use the low byte, AL, as the index into the table
+          MOV AL, BYTE PTR CIPHER[EBX]      ; get the nth byte of the intermediate state
+          MOV AL, BYTE PTR FWD_SBOX[EAX]    ; use the nth byte of the intermediate state as the index into the substitution table
+          MOV BYTE PTR CIPHER[EBX], AL      ; copy the substituted value into the nth byte of the intermediate state
+          INC EBX                           ; increment the counter
+          CMP EBX, 0FH                      ; end loop when the last byte of the state has been reached
           JLE SUB_LOOP
-     POPAD
+     POPAD                                  ; restore the original values of the registers
      RET
 SUBSTITUTE_STATE_BYTES ENDP
 
+    ; Subroutine to substitute all the individual bytes of the intermediate state
+        ; using the inverse substitution table
 INV_SUBSTITUTE_BYTES PROC NEAR
-     PUSHAD
-     MOV EBX, 0
+     PUSHAD                                 ; identical to the forward substitution subroutine, but with
+     MOV EBX, 0                                 ; a different save location
 INV_SUB_LOOP: MOV EAX, 0
               MOV AL, BYTE PTR DECRYPTED_TEXT[EBX]
               MOV AL, BYTE PTR INV_SBOX[EAX]
@@ -444,16 +433,29 @@ INV_SUB_LOOP: MOV EAX, 0
      RET
 INV_SUBSTITUTE_BYTES ENDP
 
+    ; Subroutine to shift around the bytes in the intermediate state
+        ; treat the bytes of the intermediate state as a 4x4 matrix in column major order
+        ; the registers will hold one column of the matrix each, will need to move each byte to
+        ; its new locations manually, instead of rotating the register bits
+        ;   EAX EBX ECX EDX
+        ;   [0] [4] [8] [C]        [0][4][8][C]    leave as is
+        ;   [1] [5] [9] [D]    ->  [5][9][D][1]    rotate left once
+        ;   [2] [6] [A] [E]        [A][E][2][6]    rotate left twice
+        ;   [3] [7] [B] [F]        [F][3][7][B]    rotate left three times
 ROW_SHIFT_STATE_BYTES PROC NEAR
-     PUSHAD
+     PUSHAD                         ; conserve the original values in the registers
+        ; copy the entire intermediate state across 4 registers EAX, EBX, ECX, EDX
      MOV EAX, DWORD PTR CIPHER[00H] ; EAX: [ b0  b1  b2  b3 ] -> EAX: [ b0  b5  bA  bB ]
      MOV EBX, DWORD PTR CIPHER[04H] ; EBX: [ b4  b5  b6  b7 ] -> EBX: [ b4  b9  bE  bF ]
      MOV ECX, DWORD PTR CIPHER[08H] ; ECX: [ b8  b9  bA  bB ] -> ECX: [ b8  bD  b2  b3 ]
      MOV EDX, DWORD PTR CIPHER[0CH] ; EDX: [ bC  bD  bE  bF ] -> EDX: [ bC  b1  b6  b7 ]
+        ; rotate the first byte of each register out, since the first byte has the
      ROR EAX, 8H								
      ROR EBX, 8H								
      ROR ECX, 8H								
-     ROR EDX, 8H								
+     ROR EDX, 8H
+        ; since you can access the first two bytes of each register independently, place each byte
+            ; into its final location
      MOV BYTE PTR CIPHER[0DH], AL
      MOV BYTE PTR CIPHER[0AH], AH
      MOV BYTE PTR CIPHER[01H], BL
@@ -462,24 +464,35 @@ ROW_SHIFT_STATE_BYTES PROC NEAR
      MOV BYTE PTR CIPHER[02H], CH
      MOV BYTE PTR CIPHER[09H], DL
      MOV BYTE PTR CIPHER[06H], DH
+        ; rotate each register to get access to the last bytes to move
      ROR EAX, 010H							
      ROR EBX, 010H							
      ROR ECX, 010H							
      ROR EDX, 010H							
+        ; move the last bytes into their final location
      MOV BYTE PTR CIPHER[07H], AL	
      MOV BYTE PTR CIPHER[0BH], BL	
      MOV BYTE PTR CIPHER[0FH], CL	
      MOV BYTE PTR CIPHER[03H], DL	
-     POPAD
+     POPAD                          ; restore the original values of the registers
      RET
 ROW_SHIFT_STATE_BYTES ENDP
 
+    ; Subroutine to shift around the bytes in the intermediate state to undo a previous row shift
+        ; treat the bytes of the intermediate state as a 4x4 matrix in column major order
+        ; the registers will hold one column of the matrix each, will need to move each byte to
+        ; its new locations manually, instead of rotating the register bits
+        ;   EAX EBX ECX EDX
+        ;   [0] [4] [8] [C]        [0][4][8][C]    leave as is
+        ;   [5] [9] [D] [1]    ->  [1][5][9][D]    rotate right once
+        ;   [A] [E] [2] [6]        [2][6][A][E]    rotate right twice
+        ;   [F] [3] [7] [B]        [3][7][B][F]    rotate right three times
 INV_ROW_SHIFT_BYTES PROC NEAR
      PUSHAD
-     MOV EAX, DWORD PTR DECRYPTED_TEXT[00H] ; EAX: [ b0  b1  b2  b3 ] -> EAX: [ b0  bD  bA  b7 ]
-     MOV EBX, DWORD PTR DECRYPTED_TEXT[04H] ; EBX: [ b4  b5  b6  b7 ] -> EBX: [ b4  b1  bE  bB ]
-     MOV ECX, DWORD PTR DECRYPTED_TEXT[08H] ; ECX: [ b8  b9  bA  bB ] -> ECX: [ b8  b5  b2  bF ]
-     MOV EDX, DWORD PTR DECRYPTED_TEXT[0CH] ; EDX: [ bC  bD  bE  bF ] -> EDX: [ bC  b9  b6  b3 ]
+     MOV EAX, DWORD PTR DECRYPTED_TEXT[00H]     ; identical code to the row shift subroutine, but with 
+     MOV EBX, DWORD PTR DECRYPTED_TEXT[04H]         ; a different save location
+     MOV ECX, DWORD PTR DECRYPTED_TEXT[08H] 
+     MOV EDX, DWORD PTR DECRYPTED_TEXT[0CH] 
      ROR EAX, 8H								
      ROR EBX, 8H								
      ROR ECX, 8H								
@@ -504,35 +517,59 @@ INV_ROW_SHIFT_BYTES PROC NEAR
      RET
 INV_ROW_SHIFT_BYTES ENDP
 
+    ; Subroutine to perform the MixColumns step of the Advanced Encryption Standard
+        ; represent the 16 bytes of the state as a 4x4 matrix with byte0, byte1, byte2, byte3 as the first column, etc.
+        ;   [0] [4] [8] [C]
+        ;   [1] [5] [9] [D]
+        ;   [2] [6] [A] [E]
+        ;   [3] [7] [B] [F]
+        ; represent the first column bytes as the coefficients of the polynomial: b(x) = b3 * x^3 + b2 * x^2 + b1 * x + b0
+        ; recognize the polynomial as residing in a finite field of order 2^8, GF(2^8)
+        ; 2 due to being a binary value and 8 due to the byte coefficient having 8 bits
+        ; characteristic p = 2 (the prime number on which the finite field is based)
+        ; multiply the column polynomial by the polynomial a(x) = a3 * x^3 + a2 * x^2 + a1 * x + a0, where a3 = 3, a2 = 1, a1 = 1, a0 = 2
+        ; to get the resultant polynomial c(x)
+        ; since the order of both polynomials is 3, the resulting polynomial is of order 6, and is:
+        ; a0 b0 + a0 b1 x + a0 b2 x^2 + a0 b3 x^3 + a1 b0 x + a1 b1 x^2 + a1 b2 x^3 + a1 b3 x^4 + a2 b0 x^2 + a2 b1 x^3 + a2 b2 x^4 
+        ; + a2 b3 x^5 + a3 b0 x^3 + a3 b1 x^4 + a3 b2 x^5 + a3 b3 x^6
+        ; Note that multiplication in GF(2^8) is distinct from ordinary polynomial multiplication. It requires performing bit-level operations,
+        ; taking care of carries in a specific way, and reducing modulo m(x) to ensure that the result is in the correct form.
+        ; this polynomial represents a value over the bounds of the finite field of order 2^8, to get the representation of this
+        ; value within the finite field of order 2^8, perform modular reduction with the polynomial x^8 + x^4 + x^3 + x + 1
+        ; this reduced polynomial has the coefficients which will be the bytes of the new column
+        ; more info at: https://en.wikipedia.org/wiki/Rijndael_MixColumns , https://en.wikipedia.org/wiki/Finite_field 
+        ; https://en.wikipedia.org/wiki/Finite_field_arithmetic#Rijndael's_(AES)_finite_field
 COLUMN_MIX_STATE_BYTES PROC NEAR
-     PUSHAD
-     MOV EBX, 0                 ; OUTER LOOP COUNTER -> EBX
-COL_LOOP: MOV EDX, DWORD PTR CIPHER[EBX] ; INNER LOOP CURRENT 4 BYTES -> EDX
-          MOV ECX, 0
-          PUSH EBX	
-          MOV EBX, 0
-          MOV ESI, 0            ; INNER LOOP COUNTER -> ESI
-INNER_COL_LOOP: MOV AL, DL      ; TEMP USE -> EAX
+     PUSHAD                                     ; conserve the register values
+     MOV EBX, 0                                 ; use EBX as index of the current column: column 0, column 1, column 2, column 3
+COL_LOOP: MOV EDX, DWORD PTR CIPHER[EBX]        ; move the nth column into the EDX register
+          PUSH EBX                              ; conserve the value of the column index counter
+          MOV EBX, 0                            ; zero out EBX, as it will be used in the inner loop
+          MOV ESI, 0                            ; use ESI as the counter for the inner loop
+
+          ; create an A array -> will hold every original column byte value
+          ; create a B array  -> will hold the corresponding column byte multiplied by 2 in the finite field, GF(2^8)
+INNER_COL_LOOP: MOV AL, DL                      ; TEMP USE -> EAX
                 SAR AL, 7								
                 AND AL, 01
-                POP EDI         ; POP WHAT WAS IN EBX INTO EDI
+                POP EDI                         ; POP WHAT WAS IN EBX INTO EDI
                 ADD ESI, EDI
                 MOV BL, BYTE PTR CIPHER[ESI]
                 SUB ESI, EDI
                 SHL BL, 1								
-                PUSH EDI        ; POP WHAT WAS IN EDI INTO WHAT WILL BE POPPED INTO EBX
+                PUSH EDI                        ; POP WHAT WAS IN EDI INTO WHAT WILL BE POPPED INTO EBX
                 MOV AH, 01BH
                 MUL AH									
-                XOR BL, AL      ; BL = B[i] ^= H * 1B
+                XOR BL, AL                      ; BL = B[i] ^= H * 1B
                 ROR EDX, 8
                 ROR EBX, 8
                 INC ESI
                 CMP ESI, 3
                 JLE INNER_COL_LOOP
-          MOV ECX, EDX          ; A ARRAY -> ECX
-          MOV EAX, EBX          ; EAX IS NOW THE B ARRAY
+          MOV ECX, EDX                          ; A ARRAY -> ECX
+          MOV EAX, EBX                          ; EAX IS NOW THE B ARRAY
           POP EBX
-          MOV ESI, 0            ; OTHER INNER LOOP COUNTER
+          MOV ESI, 0                            ; OTHER INNER LOOP COUNTER
     PLACE_LOOP: MOV BYTE PTR CIPHER[EBX + ESI], AL     ; R[0] = B[0] <- THE INDICES ROTATE
                 ROL ECX, 8			; CL = A[3]        ;           TO THE CORRECT VALUES EVERY LOOP
                 XOR BYTE PTR CIPHER[EBX + ESI], CL     ; R[0] = B[0] ^ A[3]
