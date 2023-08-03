@@ -543,66 +543,86 @@ COLUMN_MIX_STATE_BYTES PROC NEAR
      PUSHAD                                     ; conserve the register values
      MOV EBX, 0                                 ; use EBX as index of the current column: column 0, column 1, column 2, column 3
 COL_LOOP: MOV EDX, DWORD PTR CIPHER[EBX]        ; move the nth column into the EDX register
-          PUSH EBX                              ; conserve the value of the column index counter
-          MOV EBX, 0                            ; zero out EBX, as it will be used in the inner loop
-          MOV ESI, 0                            ; use ESI as the counter for the inner loop
+          PUSH EBX                              ; save the current value of the column index counter
+          MOV EBX, 0                            ; zero out EBX, as it will be used to hold an array of bytes
+          MOV ESI, 0                            ; use ESI as the counter for the inner loops
 
-          ; create an A array -> will hold every original column byte value
-          ; create a B array  -> will hold the corresponding column byte multiplied by 2 in the finite field, GF(2^8)
-INNER_COL_LOOP: MOV AL, DL                      ; TEMP USE -> EAX
-                SAR AL, 7								
-                AND AL, 01
-                POP EDI                         ; POP WHAT WAS IN EBX INTO EDI
-                ADD ESI, EDI
-                MOV BL, BYTE PTR CIPHER[ESI]
-                SUB ESI, EDI
-                SHL BL, 1								
-                PUSH EDI                        ; POP WHAT WAS IN EDI INTO WHAT WILL BE POPPED INTO EBX
-                MOV AH, 01BH
-                MUL AH									
-                XOR BL, AL                      ; BL = B[i] ^= H * 1B
-                ROR EDX, 8
-                ROR EBX, 8
+          ; create an array A -> will hold every original column byte value
+          ; create an array B -> will hold the corresponding column byte multiplied by 2 in the finite field, GF(2^8)
+INNER_COL_LOOP: MOV AL, DL                      ; get the nth column byte into AL (into h), h is a temporary use variable
+                SAR AL, 7					    ; start this operation h = (col_byte >> 7) & 1
+                AND AL, 01                          ; finish this operation h = (col_byte >> 7) & 1
+                    ; since EBX was previously pushed, this gets the current value of the column index counter into EDI
+                POP EDI                         
+                ADD ESI, EDI                    ; adds the current column counter to the current byte counter to get a memory offset
+                                                    ; to the nth byte
+                MOV BL, BYTE PTR CIPHER[ESI]    ; get the nth byte of the original column values
+                SUB ESI, EDI                    ; ESI was temporarily used as the offset to the nth byte's memory location,
+                                                    ; this restores its use as the current column byte counter
+                SHL BL, 1						; performs this operation B[n] = col_byte << 1;
+                PUSH EDI                        ; saves the current value of the column index counter for the next iteration
+                MOV AH, 01BH                    ; moves 1B into AH
+                MUL AH						    ; multiplies 1B by AL, which is holding h, thus AL = h * 1B
+                XOR BL, AL                      ; finishes this operation B[n] ^= h * 1B, B[n] now holds the corresponding column byte
+                                                    ; multiplied by 2 in the finite field, GF(2^8)
+                ROR EDX, 8                      ; rotate A array, to perform this loop on the next column byte
+                ROR EBX, 8                      ; rotate B array, to perform this loop on the next column byte
                 INC ESI
-                CMP ESI, 3
+                CMP ESI, 3                      ; loop over all 4 column bytes
                 JLE INNER_COL_LOOP
-          MOV ECX, EDX                          ; A ARRAY -> ECX
-          MOV EAX, EBX                          ; EAX IS NOW THE B ARRAY
-          POP EBX
-          MOV ESI, 0                            ; OTHER INNER LOOP COUNTER
-    PLACE_LOOP: MOV BYTE PTR CIPHER[EBX + ESI], AL     ; R[0] = B[0] <- THE INDICES ROTATE
-                ROL ECX, 8			; CL = A[3]        ;           TO THE CORRECT VALUES EVERY LOOP
-                XOR BYTE PTR CIPHER[EBX + ESI], CL     ; R[0] = B[0] ^ A[3]
+          MOV ECX, EDX                          ; relocate the A array into the ECX register
+          MOV EAX, EBX                          ; relocate the B array into the EAX register
+          POP EBX                               ; clears the stack of the saved value used in the loop, it's no longer needed
+
+            ; this loop calculates the final value of a single column byte every iteration using a carousel method
+                ; the final value calculated is the bytes contribution in the finite field product
+                ;   column byte 0 = B[0] ^ A[3] ^ A[2] ^ B[1] ^ A[1]
+                ;   column byte 1 = B[1] ^ A[0] ^ A[3] ^ B[2] ^ A[2]
+                ;   column byte 2 = B[2] ^ A[1] ^ A[0] ^ B[3] ^ A[3]
+                ;   column byte 3 = B[3] ^ A[2] ^ A[1] ^ B[0] ^ A[0]
+          MOV ESI, 0                            ; counter for this byte loop
+    PLACE_LOOP: MOV BYTE PTR CIPHER[EBX + ESI], AL      ; column byte n = B[n]
+                ROL ECX, 8			; CL = A[3]       
+                XOR BYTE PTR CIPHER[EBX + ESI], CL      ; column byte n = B[n] ^ A[(n+3)%4]
                 ROL ECX, 8			; CL = A[2]
-                XOR BYTE PTR CIPHER[EBX + ESI], CL     ; R[0] = B[0] ^ A[3] ^ A[2]
+                XOR BYTE PTR CIPHER[EBX + ESI], CL      ; column byte n = B[n] ^ A[(n+3)%4] ^ A[(n+2)%4]
                 ROR EAX, 8			; AL = B[1]
-                XOR BYTE PTR CIPHER[EBX + ESI], AL     ; R[0] = B[0] ^ A[3] ^ A[2] ^ B[1]
+                XOR BYTE PTR CIPHER[EBX + ESI], AL      ; column byte n = B[n] ^ A[(n+3)%4] ^ A[(n+2)%4] ^ B[(n+1)%4]
                 ROL ECX, 8			; CL = A[1]
-                XOR BYTE PTR CIPHER[EBX + ESI], CL     ; R[0] = B[0] ^ A[3] ^ A[2] ^ B[1] ^ A[1]
+                XOR BYTE PTR CIPHER[EBX + ESI], CL      ; column byte n = B[n] ^ A[(n+3)%4] ^ A[(n+2)%4] ^ B[(n+1)%4] ^ A[(n+1)%4]
                 INC ESI
-                CMP ESI, 3
+                CMP ESI, 3                              ; loop over all 4 bytes of the current column
                 JLE PLACE_LOOP
-          ADD EBX, 04H
-          CMP EBX, 0CH
+          ADD EBX, 04H                      
+          CMP EBX, 0CH                                  ; loop over all 4 columns of the intermediate state
           JLE COL_LOOP
-     POPAD
+     POPAD                                              ; restore the register values
      RET
 COLUMN_MIX_STATE_BYTES ENDP
 
+    ; Subroutine to perform the inverse MixColumns step of the Advanced Encryption Standard
+        ; performs the calculations using a different method than the forward MixColumns step (just in this implementation)
 INV_COLUMN_MIX_BYTES PROC NEAR
-     PUSHAD
-     MOV EBX, 0     ; OUTER LOOP COUNTER -> EBX
-INV_COL_LOOP: MOV EDX, DWORD PTR DECRYPTED_TEXT[EBX] ; CURRENT 4 BYTES -> EDX
-              PUSH EBX          ; save the outer loop counter's value for use later
-              MOV ESI, 0        ; COL_BYTE_LOOP COUNTER -> ESI
-   COL_BYTE_LOOP: MOV EAX, 0090D0B0EH     ; START STATE OF B ARRAY
-                  MOV ECX, ESI
-                  SHL ECX, 3
-                  ROL EAX, CL             ; ROTATE THE MULTIPLIYING ARRAY BY 1 BYTE EVERY TURN
-                  MOV ECX, EDX            ; START STATE OF A ARRAY
-                  MOV EBX, 0              ; START STATE OF P ARRAY
-                  CALL GALOIS_MULTIPLICATION ; STORE THE PRODUCT OF GALOIS MULTIPLICATION EVERY TURN
-                  ROR EAX, 8
+     PUSHAD                                     ; conserve the register values
+     MOV EBX, 0                                 ; using EBX as a loop counter to loop over the 4 columns
+INV_COL_LOOP: MOV EDX, DWORD PTR DECRYPTED_TEXT[EBX]    ; move the nth column of bytes into EDX
+              PUSH EBX                                  ; store the current column index for use within the loop
+              MOV ESI, 0                                ; using ESI as the current byte index to loop over the 4 bytes in the column
+   COL_BYTE_LOOP: MOV EAX, 0090D0B0EH                   ; using EAX to store the coefficients 11, 13, 9, 14 of the inverting polynomial
+                  MOV ECX, ESI                          ; rotate the inverting polynomial coefficients array to the corresponding 
+                  SHL ECX, 3                                ; polynomial coefficient for the current multiplication, this is done
+                  ROL EAX, CL                               ; by rotating the register bytes 8 * current byte index times, done with SHL ECX, 3
+                    ; this block of code calculates the 4 values used to calculate the nth coefficient of the resulting polynomial
+                        ; the galois multiplication subroutine is used to calculate the finite field, GF(2^8), product of two bytes
+                        ; and requires the values that are to be multiplied to be placed in CL and AL, the low bytes of the ECX and EAX registers
+                        ; this code performs 4 galois field multiplications by using the 4 byte locations of the registers and rotating
+                        ; each multiplication, the output is returned in BL, the low byte of the EBX register, this doesn't modify any
+                        ; other locations in the EBX register so the EBX register is rotated as well
+                  MOV ECX, EDX                          ; store the current column of bytes in ECX
+                  MOV EBX, 0                            ; zero out the EBX register, the results will be stored there
+                        ; multiply AL by CL using Galois Multiplication, store result in BL, rotate to next low bytes
+                  CALL GALOIS_MULTIPLICATION
+                  ROR EAX, 8                            ; rotate registers to get the next byte in place
                   ROR ECX, 8
                   ROR EBX, 8
                   CALL GALOIS_MULTIPLICATION
@@ -617,75 +637,84 @@ INV_COL_LOOP: MOV EDX, DWORD PTR DECRYPTED_TEXT[EBX] ; CURRENT 4 BYTES -> EDX
                   ROR EAX, 8
                   ROR ECX, 8
                   ROR EBX, 8
-                  MOV ECX, EBX     ; XOR ALL THE STORED GALOIS PRODUCTS TOGETHER AND
-                  ROR EBX, 8       ; PLACE INTO MEMORY
-                  XOR CL, BL
-                  ROR EBX, 8
-                  XOR CL, BL
-                  ROR EBX, 8
-                  XOR CL, BL
-                  ROR EBX, 8       ; CL NOW CONTAINS R[0]
-                  POP EBX
-                  MOV BYTE PTR DECRYPTED_TEXT[EBX + ESI], CL ; NEW BYTE IS NOW SAVED INTO MEMORY
-                  PUSH EBX         ; ORIGINAL STATE IS STILL IN EDX
-                  INC ESI          ; NOW GO MAKE ANOTHER P ARRAY FOR THE NEXT BYTE LOCATION
-                  CMP ESI, 4
+
+                        ; code block to XOR all components to calculate the final value of the polynomial coefficient
+                  MOV ECX, EBX                          ; copy the components into the ECX register, to create a final result array
+                  ROR EBX, 8                            ; move to the next byte of the original components array
+                  XOR CL, BL                            ; XOR low byte of final result array with 2nd byte of original components array
+                  ROR EBX, 8                            ; move to the next byte of the original components array
+                  XOR CL, BL                            ; XOR low byte of final result array with 3rd byte of original components array
+                  ROR EBX, 8                            ; move to the next byte of the original components array
+                  XOR CL, BL                            ; XOR low byte of final result array with 4th byte of original components array
+                  ROR EBX, 8                            ; CL, the low byte of the ECX register, now has the final value of the coefficient
+                  POP EBX                               ; get the value of the current column index, which was saved on the stack
+                  MOV BYTE PTR DECRYPTED_TEXT[EBX + ESI], CL    ; save the coefficient value into the nth byte of the current column
+                  PUSH EBX                              ; save the current column index on the stack
+                  INC ESI                               ; increment ESI to access the next column byte
+                  CMP ESI, 4                            ; break out of loop after processing the 4th byte
                   JL COL_BYTE_LOOP
-              POP EBX
+              POP EBX                           ; clear the stack of the the current column index, it's no longer needed
               ADD EBX, 04H
-              CMP EBX, 0CH
+              CMP EBX, 0CH                      ; break out of loop after processing the 4th column
               JLE INV_COL_LOOP
-     POPAD
-     RET
+     POPAD                                      ; restore the register values
+     RET                                        
 INV_COLUMN_MIX_BYTES ENDP
 
-GALOIS_MULTIPLICATION PROC NEAR ; INPUT: a->CL, b->AL
-     PUSH ECX ; OUTPUT: p->BL
+    ; Subroutine to perform Galois Field Multiplication of two bytes, requires the values that are to be multiplied to be placed
+        ; in AL and CL, the low bytes of the EAX and ECX registers. Returns the product in BL, the low byte of the EBX register
+GALOIS_MULTIPLICATION PROC NEAR
+     PUSH ECX                   ; conserve the values of the ECX, EAX, and ESI registers
      PUSH EAX
      PUSH ESI
-     MOV BL, 0
-     MOV ESI, 0							
-P_VAL_LOOP:	   PUSH EAX
-               AND AL, 01
-               CMP AL, 00
-               POP EAX
-               JZ SKIP_1
-               XOR BL, CL
-       SKIP_1: PUSH ECX
-               AND CL, 80H
+     MOV BL, 0                  ; zero out BL register
+     MOV ESI, 0				    ; zero out the ESI register
+P_VAL_LOOP:	   PUSH EAX         ; temporarily conserve the first product term
+               AND AL, 01       ; check if the first product term is 1
+               CMP AL, 00       
+               POP EAX          ; restore the first product term
+               JZ SKIP_1        ; if first product term equals 1, skip the next calculation
+               XOR BL, CL       ; XOR both products terms and save into the return register
+       SKIP_1: PUSH ECX         ; temporarily conserve the second product term
+               AND CL, 80H      ; test condition: if high bit of second product term is not 1
                CMP CL, 00
-               POP ECX
-               JZ SKIP_2
-               SHL CL, 1
-               XOR CL, 1BH
-               JMP SKIP_SHL
-       SKIP_2: SHL CL, 1
-     SKIP_SHL: SAR AL, 1
-               INC ESI
-               CMP ESI, 8
+               POP ECX          ; restore the second product term
+               JZ SKIP_2        ; if high bit was 1 skip the next calculation
+               SHL CL, 1        ; start this calculation: term2 = ((term2 << 1) XOR 1B)
+               XOR CL, 1BH      ; finish the calculation
+               JMP SKIP_SHL     ; skip the left shift, as it was already done
+       SKIP_2: SHL CL, 1        ; left shift the second product term 1 bit
+     SKIP_SHL: SAR AL, 1        ; right shift the first product term 1 bit
+               INC ESI          ; increment the loop counter
+               CMP ESI, 8       ; loop 8 times
                JL P_VAL_LOOP
-     POP ESI
+     POP ESI                    ; restore the original register values of ESI, EAX, ECX
      POP EAX
      POP ECX
      RET
 GALOIS_MULTIPLICATION ENDP
 
-CONVERT_NIBBLES_TO_ASCII PROC NEAR	; converts 16 bytes to 32 bytes of ascii characters
-			PUSHAD
-				MOV EAX, 0
+    ; Subroutine to convert raw hexadecimal values of the intermediate state to individual ascii characters, this turns 16 bytes of raw
+        ; hexadecimal nibbles, to 32 bytes of ascii characters. It uses a look up table with the first 16 hexadecimal numbers
+        ; mapped to their ascii representations.
+        ; hex value:    [0]  [1]  [2]  [3]  [4]  [5]  [6]  [7]  [8]  [9]  [A]  [B]  [C]  [D]  [E]  [F]
+        ; ascii value:  [30] [31] [32] [33] [34] [35] [36] [37] [38] [39] [41] [42] [43] [44] [45] [46]
+CONVERT_NIBBLES_TO_ASCII PROC NEAR
+			PUSHAD                  ; conserve all register values
+				MOV EAX, 0          ; zero out the EAX and EDX registers
 				MOV EDX, 0
 				MOV ECX, 0FH
-		BYTE_LOOP:	MOV AL, BYTE PTR CIPHER[ECX]
-					MOV DL, BYTE PTR CIPHER[ECX]
-					AND AL, 00FH		; AB -> AL=0B	; split the nibbles into separate bytes
-					AND DL, 0F0H		; AB -> DL=A0
-					SHR DL, 4			; A0 -> DL=0A
-					MOV AL, BYTE PTR HEX_TO_ASCII[EAX]	; convert the high and low bytes to ascii
-					MOV DL, BYTE PTR HEX_TO_ASCII[EDX]
-					SHL ECX, 1
-					MOV BYTE PTR CIPHER_ASCII[ECX + 1], AL
-					MOV BYTE PTR CIPHER_ASCII[ECX + 0], DL
-					SHR ECX, 1
+		BYTE_LOOP:	MOV AL, BYTE PTR CIPHER[ECX]        ; get the nth byte of the intermediate state save to AL
+					MOV DL, BYTE PTR CIPHER[ECX]        ; get the nth byte of the intermediate state save to DL
+					AND AL, 00FH		                ; empty out the high nibble of AL
+					AND DL, 0F0H		                ; empty out the low nibble of DL
+					SHR DL, 4			                ; move the high nibble of DL to the low nibble position
+					MOV AL, BYTE PTR HEX_TO_ASCII[EAX]	; use a look up table to get the ascii value of the current byte's low nibble
+					MOV DL, BYTE PTR HEX_TO_ASCII[EDX]  ; use a look up table to get the ascii value of current byte's high nibble
+					SHL ECX, 1                          ; double the index of the counter to account for the double size of the ascii version
+					MOV BYTE PTR CIPHER_ASCII[ECX + 1], AL  ; place the 1st ascii byte into the memory location of the ascii version of the state
+					MOV BYTE PTR CIPHER_ASCII[ECX + 0], DL  ; place the 2nd ascii byte into the memory location of the ascii version of the state
+					SHR ECX, 1                          ; halve the index of the counter to get back to the size of the raw state bytes
 					DEC ECX
 					CMP ECX, 0
 					JGE BYTE_LOOP
@@ -693,17 +722,19 @@ CONVERT_NIBBLES_TO_ASCII PROC NEAR	; converts 16 bytes to 32 bytes of ascii char
 				RET
 CONVERT_NIBBLES_TO_ASCII ENDP
 
-CONVERT_DECRYPT_NIBBLES_TO_ASCII PROC NEAR	; converts 16 bytes to 32 bytes of ascii characters
+    ; Subroutine to convert raw hexadecimal values of the inverse state to individual ascii characters, this turns 16 bytes of raw
+        ; hexadecimal nibbles, to 32 bytes of ascii characters. Uses the same code as the forward state version, but different save location.
+CONVERT_DECRYPT_NIBBLES_TO_ASCII PROC NEAR
 			PUSHAD
 				MOV EAX, 0
 				MOV EDX, 0
 				MOV ECX, 0FH
 	INV_BYTE_LOOP:	MOV AL, BYTE PTR DECRYPTED_TEXT[ECX]
 					MOV DL, BYTE PTR DECRYPTED_TEXT[ECX]
-					AND AL, 00FH		; AB -> AL=0B	; split the nibbles into separate bytes
-					AND DL, 0F0H		; AB -> DL=A0
-					SHR DL, 4			; A0 -> DL=0A
-					MOV AL, BYTE PTR HEX_TO_ASCII[EAX]	; convert the high and low bytes to ascii
+					AND AL, 00FH
+					AND DL, 0F0H
+					SHR DL, 4
+					MOV AL, BYTE PTR HEX_TO_ASCII[EAX]
 					MOV DL, BYTE PTR HEX_TO_ASCII[EDX]
 					SHL ECX, 1
 					MOV BYTE PTR DECRYPTED_TEXT_ASCII[ECX + 1], AL
@@ -716,17 +747,19 @@ CONVERT_DECRYPT_NIBBLES_TO_ASCII PROC NEAR	; converts 16 bytes to 32 bytes of as
 				RET
 CONVERT_DECRYPT_NIBBLES_TO_ASCII ENDP
 
-CONVERT_PLAINTEXT_TO_ASCII PROC NEAR	; converts 16 bytes to 32 bytes of ascii characters
+    ; Subroutine to convert raw hexadecimal values of the plaintext to individual ascii characters, this turns 16 bytes of raw
+        ; hexadecimal nibbles, to 32 bytes of ascii characters. Uses the same code as the forward state version, but different save location.
+CONVERT_PLAINTEXT_TO_ASCII PROC NEAR
 			PUSHAD
 				MOV EAX, 0
 				MOV EDX, 0
 				MOV ECX, 0FH
 	PT_BYTE_LOOP:	MOV AL, BYTE PTR PLAINTEXT[ECX]
 					MOV DL, BYTE PTR PLAINTEXT[ECX]
-					AND AL, 00FH		; AB -> AL=0B	; split the nibbles into separate bytes
-					AND DL, 0F0H		; AB -> DL=A0
-					SHR DL, 4			; A0 -> DL=0A
-					MOV AL, BYTE PTR HEX_TO_ASCII[EAX]	; convert the high and low bytes to ascii
+					AND AL, 00FH
+					AND DL, 0F0H
+					SHR DL, 4
+					MOV AL, BYTE PTR HEX_TO_ASCII[EAX]
 					MOV DL, BYTE PTR HEX_TO_ASCII[EDX]
 					SHL ECX, 1
 					MOV BYTE PTR PLAINTEXT_ASCII[ECX + 1], AL
@@ -739,17 +772,19 @@ CONVERT_PLAINTEXT_TO_ASCII PROC NEAR	; converts 16 bytes to 32 bytes of ascii ch
 				RET
 CONVERT_PLAINTEXT_TO_ASCII ENDP
 
-CONVERT_KEY_TO_ASCII PROC NEAR	; converts 16 bytes to 32 bytes of ascii characters
+    ; Subroutine to convert raw hexadecimal values of the cipher key to individual ascii characters, this turns 16 bytes of raw
+        ; hexadecimal nibbles, to 32 bytes of ascii characters. Uses the same code as the forward state version, but different save location.
+CONVERT_KEY_TO_ASCII PROC NEAR
 			PUSHAD
 				MOV EAX, 0
 				MOV EDX, 0
 				MOV ECX, 0FH
 	KEY_BYTE_LOOP:	MOV AL, BYTE PTR KEY[ECX]
 					MOV DL, BYTE PTR KEY[ECX]
-					AND AL, 00FH		; AB -> AL=0B	; split the nibbles into separate bytes
-					AND DL, 0F0H		; AB -> DL=A0
-					SHR DL, 4			; A0 -> DL=0A
-					MOV AL, BYTE PTR HEX_TO_ASCII[EAX]	; convert the high and low bytes to ascii
+					AND AL, 00FH
+					AND DL, 0F0H
+					SHR DL, 4
+					MOV AL, BYTE PTR HEX_TO_ASCII[EAX]
 					MOV DL, BYTE PTR HEX_TO_ASCII[EDX]
 					SHL ECX, 1
 					MOV BYTE PTR KEY_ASCII[ECX + 1], AL
