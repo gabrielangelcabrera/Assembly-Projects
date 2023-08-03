@@ -708,7 +708,7 @@ CONVERT_NIBBLES_TO_ASCII PROC NEAR
 					MOV DL, BYTE PTR CIPHER[ECX]        ; get the nth byte of the intermediate state save to DL
 					AND AL, 00FH		                ; empty out the high nibble of AL
 					AND DL, 0F0H		                ; empty out the low nibble of DL
-					SHR DL, 4			                ; move the high nibble of DL to the low nibble position
+					SHR DL, 4				; move the high nibble of DL to the low nibble position
 					MOV AL, BYTE PTR HEX_TO_ASCII[EAX]	; use a look up table to get the ascii value of the current byte's low nibble
 					MOV DL, BYTE PTR HEX_TO_ASCII[EDX]  ; use a look up table to get the ascii value of current byte's high nibble
 					SHL ECX, 1                          ; double the index of the counter to account for the double size of the ascii version
