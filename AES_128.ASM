@@ -668,8 +668,8 @@ GALOIS_MULTIPLICATION PROC NEAR
      PUSH EAX
      PUSH ESI
      MOV BL, 0                  ; zero out BL register
-     MOV ESI, 0				    ; zero out the ESI register
-P_VAL_LOOP:	   PUSH EAX         ; temporarily conserve the first product term
+     MOV ESI, 0			; zero out the ESI register
+P_VAL_LOOP:    PUSH EAX         ; temporarily conserve the first product term
                AND AL, 01       ; check if the first product term is 1
                CMP AL, 00       
                POP EAX          ; restore the first product term
@@ -704,17 +704,17 @@ CONVERT_NIBBLES_TO_ASCII PROC NEAR
 				MOV EAX, 0          ; zero out the EAX and EDX registers
 				MOV EDX, 0
 				MOV ECX, 0FH
-		BYTE_LOOP:	MOV AL, BYTE PTR CIPHER[ECX]        ; get the nth byte of the intermediate state save to AL
-					MOV DL, BYTE PTR CIPHER[ECX]        ; get the nth byte of the intermediate state save to DL
+		BYTE_LOOP:	MOV AL, BYTE PTR CIPHER[ECX]        		; get the nth byte of the intermediate state save to AL
+					MOV DL, BYTE PTR CIPHER[ECX]        	; get the nth byte of the intermediate state save to DL
 					AND AL, 00FH		                ; empty out the high nibble of AL
 					AND DL, 0F0H		                ; empty out the low nibble of DL
 					SHR DL, 4				; move the high nibble of DL to the low nibble position
 					MOV AL, BYTE PTR HEX_TO_ASCII[EAX]	; use a look up table to get the ascii value of the current byte's low nibble
-					MOV DL, BYTE PTR HEX_TO_ASCII[EDX]  ; use a look up table to get the ascii value of current byte's high nibble
-					SHL ECX, 1                          ; double the index of the counter to account for the double size of the ascii version
+					MOV DL, BYTE PTR HEX_TO_ASCII[EDX]  	; use a look up table to get the ascii value of current byte's high nibble
+					SHL ECX, 1                          	; double the index of the counter to account for the double size of the ascii version
 					MOV BYTE PTR CIPHER_ASCII[ECX + 1], AL  ; place the 1st ascii byte into the memory location of the ascii version of the state
 					MOV BYTE PTR CIPHER_ASCII[ECX + 0], DL  ; place the 2nd ascii byte into the memory location of the ascii version of the state
-					SHR ECX, 1                          ; halve the index of the counter to get back to the size of the raw state bytes
+					SHR ECX, 1                          	; halve the index of the counter to get back to the size of the raw state bytes
 					DEC ECX
 					CMP ECX, 0
 					JGE BYTE_LOOP
